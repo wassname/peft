@@ -33,7 +33,7 @@ def is_bnb_available():
 
 
 def is_gptq_available():
-    return importlib.util.find_spec("quant") is not None
+    return importlib.util.find_spec("gptq_llama.quant") is not None
 
 
 if is_bnb_available():
