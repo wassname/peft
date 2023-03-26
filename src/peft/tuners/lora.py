@@ -32,8 +32,16 @@ def is_bnb_available():
     return importlib.util.find_spec("bitsandbytes") is not None
 
 
+def is_gptq_available():
+    return importlib.util.find_spec("quant") is not None
+
+
 if is_bnb_available():
     import bitsandbytes as bnb
+
+
+if is_gptq_available():
+    import quant
 
 
 @dataclass
@@ -163,6 +171,8 @@ class LoraModel(torch.nn.Module):
                         new_module = MergedLinear8bitLt(target.in_features, target.out_features, bias=bias, **kwargs)
                 elif isinstance(target, torch.nn.Linear) and self.peft_config.enable_lora is None:
                     new_module = Linear(target.in_features, target.out_features, bias=bias, **kwargs)
+                elif isinstance(target, Autograd4bitQuantLinear) and self.peft_config.enable_lora is None:
+                    new_module = Linear4bitLt(target.in_features, target.out_features, bias=bias, **kwargs)
                 elif self.peft_config.enable_lora is not None:
                     kwargs.update({"enable_lora": self.peft_config.enable_lora})
                     if isinstance(target, Conv1D):
@@ -193,17 +203,31 @@ class LoraModel(torch.nn.Module):
 
     def _replace_module(self, parent_module, child_name, new_module, old_module):
         setattr(parent_module, child_name, new_module)
-        new_module.weight = old_module.weight
-        if old_module.bias is not None:
+        if isinstance(old_module, Autograd4bitQuantLinear) and isinstance(new_module, Linear4bitLt):
+            new_module.qweight = old_module.qweight
+            new_module.scales = old_module.scales
+            new_module.zeros = old_module.zeros
             new_module.bias = old_module.bias
-        if getattr(old_module, "state", None) is not None:
-            new_module.state = old_module.state
-            new_module.to(old_module.weight.device)
+            if getattr(old_module, "state", None) is not None:
+                new_module.state = old_module.state
+                new_module.to(old_module.qweight.device)
 
-        # dispatch to correct device
-        for name, module in new_module.named_modules():
-            if "lora_" in name:
-                module.to(old_module.weight.device)
+            # dispatch to correct device
+            for name, module in new_module.named_modules():
+                if "lora_" in name:
+                    module.to(old_module.qweight.device)
+        else:
+            new_module.weight = old_module.weight
+            if old_module.bias is not None:
+                new_module.bias = old_module.bias
+            if getattr(old_module, "state", None) is not None:
+                new_module.state = old_module.state
+                new_module.to(old_module.weight.device)
+
+            # dispatch to correct device
+            for name, module in new_module.named_modules():
+                if "lora_" in name:
+                    module.to(old_module.weight.device)
 
     def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped module."""
@@ -612,5 +636,62 @@ if is_bnb_available():
                     after_A = self.lora_A(self.lora_dropout(x))
                     after_B = self.lora_B(after_A.transpose(-2, -1)).transpose(-2, -1)
                     output = self.zero_pad(after_B) * self.scaling
+                    result += output
+            return result
+
+if is_gptq_available():
+
+    from autograd_4bit import Autograd4bitQuantLinear
+
+    class Linear4bitLt(Autograd4bitQuantLinear, LoraLayer):
+        # Lora implemented in a dense layer
+        def __init__(
+                self,
+                in_features,
+                out_features,
+                r: int = 0,
+                lora_alpha: int = 1,
+                lora_dropout: float = 0.0,
+                **kwargs,
+        ):
+            Autograd4bitQuantLinear.__init__(
+                self,
+                in_features,
+                out_features
+            )
+            LoraLayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, merge_weights=False)
+            # Actual trainable parameters
+            if r > 0:
+                self.lora_A = nn.Linear(in_features, r, bias=False)
+                self.lora_B = nn.Linear(r, out_features, bias=False)
+                self.scaling = self.lora_alpha / self.r
+                # Freezing the pre-trained weight matrix
+                self.qweight.requires_grad = False
+                self.scales.requires_grad = False
+                self.zeros.requires_grad = False
+                self.bias.requires_grad = False
+            self.reset_parameters()
+
+        def reset_parameters(self):
+            if hasattr(self, "lora_A"):
+                # initialize A the same way as the default for nn.Linear and B to zero
+                nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
+                nn.init.zeros_(self.lora_B.weight)
+
+        def forward(self, x: torch.Tensor):
+            result = super().forward(x)
+
+            if self.disable_adapters:
+                return result
+            elif self.r > 0:
+                if not torch.is_autocast_enabled():
+                    expected_dtype = result.dtype
+
+                    if x.dtype != torch.float32:
+                        x = x.float()
+                    output = self.lora_B(self.lora_A(self.lora_dropout(x))).to(expected_dtype) * self.scaling
+                    result += output
+                else:
+                    output = self.lora_B(self.lora_A(self.lora_dropout(x))) * self.scaling
                     result += output
             return result
