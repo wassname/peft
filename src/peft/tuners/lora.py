@@ -41,7 +41,7 @@ if is_bnb_available():
 
 
 if is_gptq_available():
-    import quant
+    from gptq_llama import quant
 
 
 @dataclass
