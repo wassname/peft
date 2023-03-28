@@ -33,15 +33,11 @@ def is_bnb_available():
 
 
 def is_gptq_available():
-    return importlib.util.find_spec("gptq_llama.quant") is not None
+    return importlib.util.find_spec("quant_cuda") is not None
 
 
 if is_bnb_available():
     import bitsandbytes as bnb
-
-
-if is_gptq_available():
-    from gptq_llama import quant
 
 
 @dataclass
@@ -172,7 +168,7 @@ class LoraModel(torch.nn.Module):
                 elif isinstance(target, torch.nn.Linear) and self.peft_config.enable_lora is None:
                     new_module = Linear(target.in_features, target.out_features, bias=bias, **kwargs)
                 elif isinstance(target, Autograd4bitQuantLinear) and self.peft_config.enable_lora is None:
-                    new_module = Linear4bitLt(target.in_features, target.out_features, bias=bias, **kwargs)
+                    new_module = Linear4bitLt(target.in_features, target.out_features, target.groupsize, bias=bias, **kwargs)
                 elif self.peft_config.enable_lora is not None:
                     kwargs.update({"enable_lora": self.peft_config.enable_lora})
                     if isinstance(target, Conv1D):
@@ -206,7 +202,10 @@ class LoraModel(torch.nn.Module):
         if isinstance(old_module, Autograd4bitQuantLinear) and isinstance(new_module, Linear4bitLt):
             new_module.qweight = old_module.qweight
             new_module.scales = old_module.scales
-            new_module.zeros = old_module.zeros
+            if old_module.groupsize == -1:
+                new_module.zeros = old_module.zeros
+            else:
+                new_module.qzeros = old_module.qzeros
             new_module.bias = old_module.bias
             if getattr(old_module, "state", None) is not None:
                 new_module.state = old_module.state
@@ -649,6 +648,7 @@ if is_gptq_available():
                 self,
                 in_features,
                 out_features,
+                groupsize: int = -1,
                 r: int = 0,
                 lora_alpha: int = 1,
                 lora_dropout: float = 0.0,
@@ -657,7 +657,8 @@ if is_gptq_available():
             Autograd4bitQuantLinear.__init__(
                 self,
                 in_features,
-                out_features
+                out_features,
+                groupsize
             )
             LoraLayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, merge_weights=False)
             # Actual trainable parameters
@@ -668,7 +669,10 @@ if is_gptq_available():
                 # Freezing the pre-trained weight matrix
                 self.qweight.requires_grad = False
                 self.scales.requires_grad = False
-                self.zeros.requires_grad = False
+                if self.groupsize == -1:
+                    self.zeros.requires_grad = False
+                else:
+                    self.qzeros.requires_grad = False
                 self.bias.requires_grad = False
             self.reset_parameters()
 
