@@ -22,8 +22,8 @@ extras["test"] = extras["dev"] + ["pytest", "pytest-xdist", "parameterized"]
 
 setup(
     name="peft",
-    version="0.3.0.dev0",
-    description="Parameter-Efficient Fine-Tuning (PEFT)",
+    version="0.3.0.dev0.1",
+    description="Parameter-Efficient Fine-Tuning (PEFT) For Llama",
     license_files=["LICENSE"],
     long_description=open("README.md", "r", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
