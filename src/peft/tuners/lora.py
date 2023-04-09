@@ -168,7 +168,7 @@ class LoraModel(torch.nn.Module):
                 elif isinstance(target, torch.nn.Linear) and self.peft_config.enable_lora is None:
                     new_module = Linear(target.in_features, target.out_features, bias=bias, **kwargs)
                 elif isinstance(target, Autograd4bitQuantLinear) and self.peft_config.enable_lora is None:
-                    new_module = Linear4bitLt(target.in_features, target.out_features, target.groupsize, bias=bias, **kwargs)
+                    new_module = Linear4bitLt(target.in_features, target.out_features, target.groupsize, target.is_v1_model, bias=bias, **kwargs)
                 elif self.peft_config.enable_lora is not None:
                     kwargs.update({"enable_lora": self.peft_config.enable_lora})
                     if isinstance(target, Conv1D):
@@ -202,10 +202,11 @@ class LoraModel(torch.nn.Module):
         if isinstance(old_module, Autograd4bitQuantLinear) and isinstance(new_module, Linear4bitLt):
             new_module.qweight = old_module.qweight
             new_module.scales = old_module.scales
-            if old_module.groupsize == -1:
+            if old_module.is_v1_model:
                 new_module.zeros = old_module.zeros
             else:
                 new_module.qzeros = old_module.qzeros
+                new_module.g_idx = old_module.g_idx
             new_module.bias = old_module.bias
             if getattr(old_module, "state", None) is not None:
                 new_module.state = old_module.state
@@ -649,6 +650,7 @@ if is_gptq_available():
                 in_features,
                 out_features,
                 groupsize: int = -1,
+                is_v1_model: bool = False,
                 r: int = 0,
                 lora_alpha: int = 1,
                 lora_dropout: float = 0.0,
@@ -658,7 +660,8 @@ if is_gptq_available():
                 self,
                 in_features,
                 out_features,
-                groupsize
+                groupsize,
+                is_v1_model
             )
             LoraLayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, merge_weights=False)
             # Actual trainable parameters
@@ -669,10 +672,11 @@ if is_gptq_available():
                 # Freezing the pre-trained weight matrix
                 self.qweight.requires_grad = False
                 self.scales.requires_grad = False
-                if self.groupsize == -1:
+                if self.is_v1_model:
                     self.zeros.requires_grad = False
                 else:
                     self.qzeros.requires_grad = False
+                    self.g_idx.requires_grad = False
                 self.bias.requires_grad = False
             self.reset_parameters()
 
