@@ -641,7 +641,7 @@ if is_bnb_available():
 
 if is_gptq_available():
 
-    from autograd_4bit import Autograd4bitQuantLinear
+    from .autograd_4bit import Autograd4bitQuantLinear
 
     class Linear4bitLt(Autograd4bitQuantLinear, LoraLayer):
         # Lora implemented in a dense layer
