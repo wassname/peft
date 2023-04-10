@@ -1,4 +1,4 @@
-import .matmul_utils_4bit as mm4b
+from . import matmul_utils_4bit as mm4b
 import torch
 import torch.nn as nn
 import time
